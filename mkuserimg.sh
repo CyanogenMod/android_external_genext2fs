@@ -48,7 +48,7 @@ case $EXT_VARIANT in
   *) echo "Only ext2, ext3, ext4 are supported!"; exit 6 ;;
 esac
 
-num_blocks=`du -sk $SRC_DIR | tail -n1 | awk '{print $1;}'`
+num_blocks=`du -skL $SRC_DIR | tail -n1 | awk '{print $1;}'`
 if [ $num_blocks -lt 20480 ]; then
   extra_blocks=3072
 else
