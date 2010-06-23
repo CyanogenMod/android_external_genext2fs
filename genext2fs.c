@@ -54,6 +54,9 @@
 // 	19 Mar 2010	Added support for 2048 and 4096 block   dng@quicinc.com
 // 			sizes (option -s)
 // 			Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+// 	23 Jun 2010	Added support for filetype info in      dng@quicinc.com
+// 			directory entries (option -t)
+// 			Copyright (c) 2010, Code Aurora Forum. All rights reserved.
 
 
 #include <config.h>
@@ -189,6 +192,18 @@ int inoblk = (BLOCKSIZE_DEFAULT / INODE_BLOCKSIZE);
 
 #define EXT2_MAGIC_NUMBER  0xEF53
 
+unsigned int ext2_feature_incompat = 0;
+
+// ext2 incompatible feature filetype
+#define EXT2_FEATURE_INCOMPAT_FILETYPE     0x0002
+#define    EXT2_FT_UNKNOWN                 0
+#define    EXT2_FT_REG_FILE                1
+#define    EXT2_FT_DIR                     2
+#define    EXT2_FT_CHRDEV                  3
+#define    EXT2_FT_BLKDEV                  4
+#define    EXT2_FT_FIFO                    5
+#define    EXT2_FT_SOCK                    6
+#define    EXT2_FT_SYMLINK                 7
 
 // direct/indirect block addresses
 
@@ -470,7 +485,17 @@ swab32(uint32 val)
 	udecl32(s_creator_os)          /* Indicator of which OS created the filesystem */ \
 	udecl32(s_rev_level)           /* The revision level of the filesystem */ \
 	udecl16(s_def_resuid)          /* The default uid for reserved blocks */ \
-	udecl16(s_def_resgid)          /* The default gid for reserved blocks */
+	udecl16(s_def_resgid)          /* The default gid for reserved blocks */ \
+	udecl32(s_first_ino)           /* The first inode */ \
+	udecl16(s_inode_size)          /* The inode size */ \
+	udecl16(s_block_group_nr)      /* The block group number of this superblock */ \
+	udecl32(s_feature_compat)      /* Compatible feature bitmask */ \
+	udecl32(s_feature_incompat)    /* Incompatible feature bitmask */ \
+	udecl32(s_feature_ro_compat)   /* Read-only feature bitmask */ \
+	utdecl32(s_uuid,4)             /* Volume ID */ \
+	utdecl32(s_volume_name,4)      /* Volume name */ \
+	utdecl32(s_last_mounted,16)    /* Last mounted directory path */ \
+	udecl32(s_algo_bitmap)         /* Compression algorithm used */
 
 #define groupdescriptor_decl \
 	udecl32(bg_block_bitmap)       /* Block number of the block bitmap */ \
@@ -506,7 +531,8 @@ swab32(uint32 val)
 #define directory_decl \
 	udecl32(d_inode)               /* Inode entry */ \
 	udecl16(d_rec_len)             /* Total size on record */ \
-	udecl16(d_name_len)            /* Size of entry name */
+	udecl8(d_name_len)             /* Size of entry name */ \
+	udecl8(d_file_type)            /* File type */
 
 #define decl8(x) int8 x;
 #define udecl8(x) uint8 x;
@@ -519,7 +545,7 @@ swab32(uint32 val)
 typedef struct
 {
 	superblock_decl
-	uint32 s_reserved[235];       // Reserved
+	uint32 s_reserved[205];       // Reserved
 } superblock;
 
 typedef struct
@@ -533,6 +559,7 @@ typedef struct
 	inode_decl
 	uint32 i_reserved2[2];
 } inode;
+#define INODE_SIZE 128
 
 typedef struct
 {
@@ -1244,6 +1271,25 @@ extend_blk(filesystem *fs, uint32 nod, block_t *b, int amount)
 	}
 }
 
+static void
+set_directory_entry_filetype(directory *d, inode *node)
+{
+	if ((ext2_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == 0)
+		return;
+
+	switch (node->i_mode & FM_IFMT)
+	{
+		case FM_IFREG:  d->d_file_type = EXT2_FT_REG_FILE; break;
+		case FM_IFDIR:  d->d_file_type = EXT2_FT_DIR;      break;
+		case FM_IFLNK:  d->d_file_type = EXT2_FT_SYMLINK;  break;
+		case FM_IFBLK:  d->d_file_type = EXT2_FT_BLKDEV;   break;
+		case FM_IFCHR:  d->d_file_type = EXT2_FT_CHRDEV;   break;
+		case FM_IFSOCK: d->d_file_type = EXT2_FT_SOCK;     break;
+		case FM_IFIFO:  d->d_file_type = EXT2_FT_FIFO;     break;
+		default:	d->d_file_type = EXT2_FT_UNKNOWN;
+	}
+}
+
 // link an entry (inode #) to a directory
 static void
 add2dir(filesystem *fs, uint32 dnod, uint32 nod, const char* name)
@@ -1282,6 +1328,7 @@ add2dir(filesystem *fs, uint32 dnod, uint32 nod, const char* name)
 				node->i_links_count++;
 				d->d_name_len = nlen;
 				strncpy(d->d_name, name, nlen);
+				set_directory_entry_filetype(d, node);
 				return;
 			}
 			// if entry with enough room (last one?), shrink it & use it
@@ -1297,6 +1344,7 @@ add2dir(filesystem *fs, uint32 dnod, uint32 nod, const char* name)
 				node->i_links_count++;
 				d->d_name_len = nlen;
 				strncpy(d->d_name, name, nlen);
+				set_directory_entry_filetype(d, node);
 				return;
 			}
 		}
@@ -1311,6 +1359,7 @@ add2dir(filesystem *fs, uint32 dnod, uint32 nod, const char* name)
 	d->d_rec_len = blocksize;
 	d->d_name_len = nlen;
 	strncpy(d->d_name, name, nlen);
+	set_directory_entry_filetype(d, node);
 	extend_blk(fs, dnod, b, 1);
 	get_nod(fs, dnod)->i_size += blocksize;
 	free_workblk(b);
@@ -2024,6 +2073,15 @@ init_fs(int nbblocks, int nbinodes, int nbresrvd, int holes, uint32 fs_timestamp
 	fs->sb.s_magic = EXT2_MAGIC_NUMBER;
 	fs->sb.s_lastcheck = fs_timestamp;
 
+	if (ext2_feature_incompat != 0) {
+		// Ext2 rev 1
+		fs->sb.s_rev_level = 1;
+		fs->sb.s_first_ino = EXT2_FIRST_INO;
+		fs->sb.s_inode_size = INODE_SIZE;
+		fs->sb.s_block_group_nr = 0;
+		fs->sb.s_feature_incompat = ext2_feature_incompat;
+	}
+
 	// set up groupdescriptors
 	for(i=0, bbmpos=gdsz+((blocksize == 1024) ? 2 : 1), ibmpos=bbmpos+1, itblpos=ibmpos+1;
 		i<nbgroups;
@@ -2093,11 +2151,17 @@ init_fs(int nbblocks, int nbinodes, int nbresrvd, int holes, uint32 fs_timestamp
 	d->d_rec_len = sizeof(directory)+4;
 	d->d_name_len = 1;
 	strcpy(d->d_name, ".");
+	if ((ext2_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == EXT2_FEATURE_INCOMPAT_FILETYPE)
+		d->d_file_type = EXT2_FT_DIR;
+
 	d = (directory*)(b + d->d_rec_len);
 	d->d_inode = EXT2_ROOT_INO;
 	d->d_rec_len = blocksize - (sizeof(directory)+4);
 	d->d_name_len = 2;
 	strcpy(d->d_name, "..");
+	if ((ext2_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == EXT2_FEATURE_INCOMPAT_FILETYPE)
+		d->d_file_type = EXT2_FT_DIR;
+
 	extend_blk(fs, EXT2_ROOT_INO, b, 1);
 
 	// make lost+found directory and reserve blocks
@@ -2504,6 +2568,7 @@ showhelp(void)
 	"  -P, --squash-perms         Squash permissions on all files.\n"
 	"  -a, --fix-android-stats    Fix-up file stats (user, perms, ...)\n"
 	"  -s, --block-size <bytes>   Block size 1024/2048/4096 (default 1024).\n"
+	"  -t, --dir-filetype         File type in directory entry (default no).\n"
 	"  -h, --help\n"
 	"  -V, --version\n"
 	"  -v, --verbose\n\n"
@@ -2564,6 +2629,7 @@ main(int argc, char **argv)
 	  { "squash-perms",	no_argument,		NULL, 'P' },
 	  { "fix-android-stats",no_argument,		NULL, 'a' },
 	  { "block-size",       required_argument,	NULL, 's' },
+	  { "dir-filetype",	no_argument,		NULL, 't' },
 	  { "help",		no_argument,		NULL, 'h' },
 	  { "version",		no_argument,		NULL, 'V' },
 	  { "verbose",		no_argument,		NULL, 'v' },
@@ -2572,11 +2638,11 @@ main(int argc, char **argv)
 
 	app_name = argv[0];
 
-	while((c = getopt_long(argc, argv, "x:d:D:b:i:N:m:g:e:zfqUPas:hVv", longopts, NULL)) != EOF) {
+	while((c = getopt_long(argc, argv, "x:d:D:b:i:N:m:g:e:zfqUPas:thVv", longopts, NULL)) != EOF) {
 #else
 	app_name = argv[0];
 
-	while((c = getopt(argc, argv,      "x:d:D:b:i:N:m:g:e:zfqUPas:hVv")) != EOF) {
+	while((c = getopt(argc, argv,      "x:d:D:b:i:N:m:g:e:zfqUPas:thVv")) != EOF) {
 #endif /* HAVE_GETOPT_LONG */
 		switch(c)
 		{
@@ -2633,6 +2699,9 @@ main(int argc, char **argv)
 					error_msg_and_die("Block size can only be 1024, 2048 or 4096.");
 				}
 				inoblk = blocksize / INODE_BLOCKSIZE;
+				break;
+			case 't':
+				ext2_feature_incompat |= EXT2_FEATURE_INCOMPAT_FILETYPE;
 				break;
 			case 'h':
 				showhelp();

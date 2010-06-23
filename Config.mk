@@ -14,7 +14,7 @@ define build-userimage-ext2-target
 	num_inodes=`find $(1) | wc -l` ; num_inodes=`expr $$num_inodes + 500`; \
 	if [ $(5) ]; then num_blocks=$(5); fi; \
 	echo "Generating "$(2)" - block_size="$$block_size", num_blocks="$$num_blocks;\
-	$(MKEXT2IMG) -a -d $(1) -b $$num_blocks -s $$block_size -N $$num_inodes -m 0 $(2)
+	$(MKEXT2IMG) -a -t -d $(1) -b $$num_blocks -s $$block_size -N $$num_inodes -m 0 $(2)
 	$(if $(strip $(3)),\
 		$(hide) $(TUNE2FS) -L $(strip $(3)) $(2))
 	$(if $(strip $(4)),\
