@@ -1686,6 +1686,8 @@ prep_stat(const char *root_path)
 		source_path_len = len - 4;
 	} else if((len >= 7) && (!strcmp(root_path + len - 6, "system"))) {
 		source_path_len = len - 6;
+	} else if((len >= 7) && (!strcmp(root_path + len - 7, "persist"))) {
+		source_path_len = len - 7;
 	} else {
 		error_msg_and_die("Fixstats (-a) option requested but "
 				  "filesystem is not data or android!");
