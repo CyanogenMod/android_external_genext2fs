@@ -11,7 +11,8 @@ define build-userimage-ext2-target
 	if [ $$num_blocks -lt 20480 ]; then extra_blocks=12288; \
 	else extra_blocks=20480; fi ; \
 	num_blocks=`expr \( $$num_blocks + $$extra_blocks \) \* 1024 / $$block_size` ; \
-	num_inodes=`find $(1) | wc -l` ; num_inodes=`expr $$num_inodes + 500`; \
+	if [ $(7) ]; then extra_inodes=$(7); else extra_inodes=500; fi; \
+	num_inodes=`find $(1) | wc -l` ; num_inodes=`expr $$num_inodes + $$extra_inodes`; \
 	if [ $(5) ]; then num_blocks=$(5); fi; \
 	echo "Generating "$(2)" - block_size="$$block_size", num_blocks="$$num_blocks;\
 	$(MKEXT2IMG) -a -t -d $(1) -b $$num_blocks -s $$block_size -N $$num_inodes -m 0 $(2)
